@@ -12,7 +12,7 @@ fn tagKind(tree: *std.zig.ast.Tree, node: *std.zig.ast.Node) u8 {
                         std.zig.Token.Id.Keyword_struct => 's',
                         std.zig.Token.Id.Keyword_union => 'u',
                         std.zig.Token.Id.Keyword_enum => 'e',
-                        else => u8(0),
+                        else => @as(u8, 0),
                     };
                 } else if (init_node.id == std.zig.ast.Node.Id.ErrorType or
                     init_node.id == std.zig.ast.Node.Id.ErrorSetDecl)
@@ -22,8 +22,7 @@ fn tagKind(tree: *std.zig.ast.Tree, node: *std.zig.ast.Node) u8 {
             }
             break :blk 'v';
         },
-        std.zig.ast.Node.Id.StructField, std.zig.ast.Node.Id.UnionTag, std.zig.ast.Node.Id.EnumTag => 'm',
-        else => u8(0),
+        else => @as(u8, 0),
     };
 }
 
@@ -58,23 +57,15 @@ const ParseArgs = struct {
     path: []const u8,
     scope_field_name: []const u8,
     scope: []const u8,
-    tags_file_stream: *std.os.File.OutStream.Stream,
+    tags_file_stream: *std.fs.File.OutStream.Stream,
 };
 
 fn findTags(args: *const ParseArgs) ErrorSet!void {
     var token_index: ?std.zig.ast.TokenIndex = null;
     switch (args.node.id) {
-        std.zig.ast.Node.Id.StructField => {
-            const struct_field = args.node.cast(std.zig.ast.Node.StructField).?;
-            token_index = struct_field.name_token;
-        },
-        std.zig.ast.Node.Id.UnionTag => {
-            const union_tag = args.node.cast(std.zig.ast.Node.UnionTag).?;
-            token_index = union_tag.name_token;
-        },
-        std.zig.ast.Node.Id.EnumTag => {
-            const enum_tag = args.node.cast(std.zig.ast.Node.EnumTag).?;
-            token_index = enum_tag.name_token;
+        std.zig.ast.Node.Id.ContainerField => {
+            const container_field = args.node.cast(std.zig.ast.Node.ContainerField).?;
+            token_index = container_field.name_token;
         },
         std.zig.ast.Node.Id.FnProto => {
             const fn_node = args.node.cast(std.zig.ast.Node.FnProto).?;
@@ -133,34 +124,38 @@ fn findTags(args: *const ParseArgs) ErrorSet!void {
     const escaped_line = try escapeString(args.allocator, line);
     defer args.allocator.free(escaped_line);
 
-    args.tags_file_stream.print("{}\t{}\t/^{}$/;\"\t{c}", name, args.path, escaped_line, tagKind(args.tree, args.node)) catch return ErrorSet.WriteError;
+    args.tags_file_stream.print("{}\t{}\t/^{}$/;\"\t{c}", .{ name, args.path, escaped_line, tagKind(args.tree, args.node) }) catch return ErrorSet.WriteError;
     if (args.scope.len > 0) {
-        args.tags_file_stream.print("\t{}:{}", args.scope_field_name, args.scope) catch return ErrorSet.WriteError;
+        args.tags_file_stream.print("\t{}:{}", .{ args.scope_field_name, args.scope }) catch return ErrorSet.WriteError;
     }
-    args.tags_file_stream.print("\n") catch return ErrorSet.WriteError;
+    args.tags_file_stream.print("\n", .{}) catch return ErrorSet.WriteError;
 }
 
 pub fn main() !void {
-    var direct_allocator = std.heap.DirectAllocator.init();
-    defer direct_allocator.deinit();
-    const allocator = &direct_allocator.allocator;
-    var args_it = std.os.args();
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const allocator = &arena.allocator;
+
+    var args_it = std.process.args();
     _ = args_it.skip(); // Discard program name
+
     const path = try args_it.next(allocator).?;
     defer allocator.free(path);
-    const source = try std.io.readFileAlloc(allocator, path);
+
+    const source = try std.fs.cwd().readFileAlloc(allocator, path, (10 * 1024 * 1024));
     defer allocator.free(source);
+
     var tree = try std.zig.parse(allocator, source);
     defer tree.deinit();
 
-    var stdout_file = try std.io.getStdOut();
+    var stdout_file = std.io.getStdOut();
     const stdout = &stdout_file.outStream().stream;
     const node = &tree.root_node.base;
     var child_i: usize = 0;
     while (node.iterate(child_i)) |child| : (child_i += 1) {
         const child_args = ParseArgs{
             .allocator = allocator,
-            .tree = &tree,
+            .tree = tree,
             .node = child,
             .path = path,
             .scope_field_name = "",
